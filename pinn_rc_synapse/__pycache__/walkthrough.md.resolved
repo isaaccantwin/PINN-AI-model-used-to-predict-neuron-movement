@@ -1,0 +1,48 @@
+# PINNs Local Minimum Fix — Walkthrough
+
+## Root Cause Analysis
+
+The first 20k-epoch run (with `lambda_ic=100`) showed `L_ic = 100.0` and `Total ≈ 10003` for **all** epochs — the model never learned anything. Two structural bugs were found:
+
+| Bug | Effect |
+|---|---|
+| `ReLU` on g output | g collapses to 0 instantly; dead gradient means the network can't un-collapse |
+| No I/O normalisation | V starts at −70 mV, so IC error at init = (−70 − 0)² ≈ 4900; × 100 = 490 000, drowning all other gradients |
+
+## Changes Applied
+
+### [pinn_model.py](file:///c:/Users/isaac/.gemini/antigravity/scratch/pinn_rc_synapse/pinn_model.py)
+- **`ReLU` → `Softplus(beta=5)`** for g output — smooth, always-positive, non-zero gradient everywhere
+- **Physics-informed normalisation** added to `NeuronPINN.__init__`:
+  - Input: `t_norm = t / T_scale` (maps [0, 100 ms] → [0, 1])
+  - V output: `V_offset + V_scale × raw` (centres on E_rest = −70 mV, scale = 30 mV)
+  - g output: `g_scale × Softplus(raw)` (scale = 10 nS ≈ expected peak)
+
+### [train_demo.py](file:///c:/Users/isaac/.gemini/antigravity/scratch/pinn_rc_synapse/train_demo.py)
+- `lambda_ic` : `100.0` → `10.0` (IC penalty no longer needed to be extreme once normalisation is correct)
+- `lambda_V = 1.0`, `lambda_g = 1.0` — balanced with data loss ✅
+- `activation = "swish"` — better gradient flow ✅
+- `epochs = 20000` ✅
+
+## Training Results
+
+| Metric | Epoch 1 | Epoch 20 000 |
+|---|---|---|
+| Total Loss | ~4.3 | **0.330** |
+| RC ODE Residual | — | 0.003792 |
+| g Decay Residual | — | 0.000356 |
+| Data Loss | — | 0.326217 |
+| IC Loss | — | ~0.000000 |
+
+## Final Error Statistics
+
+| Variable | MAE | Max Error |
+|---|---|---|
+| Membrane Potential V | **0.197 mV** | 0.548 mV |
+| Synaptic Conductance g | **0.014 nS** | 0.221 nS |
+
+Both predictions now track the analytical solution with sub-millivolt and sub-nanosiemens accuracy.
+
+## Output
+
+![pinn_results.png](C:/Users/isaac/.gemini/antigravity/brain/aa17ec6b-89db-40f3-ba14-7f50a011aa66/pinn_results.png)
